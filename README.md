@@ -29,7 +29,7 @@ cac 通过 wrapper 机制拦截所有 `claude` 调用，在进程层面隔离设
 **一键安装（推荐）：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourname/cac/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nmhjklnm/cac/master/install.sh | bash
 ```
 
 安装脚本会自动完成：将 `cac` 放入 `~/bin`、在 `~/.zshrc` 中添加 PATH、生成 wrapper 和 fake ioreg。
@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/yourname/cac/main/install.sh | bash
 **手动安装：**
 
 ```bash
-git clone https://github.com/yourname/cac.git
+git clone https://github.com/nmhjklnm/cac.git
 cd cac
 bash install.sh
 ```
