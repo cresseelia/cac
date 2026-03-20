@@ -7,7 +7,7 @@
 **[中文](#中文) | [English](#english)**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Shell](https://img.shields.io/badge/Shell-Bash-green.svg)]()
 
 </div>
@@ -32,11 +32,12 @@ Claude Code 在运行过程中会读取并上报设备标识符（硬件 UUID、
 
 | | 特性 | 说明 |
 |:---|:---|:---|
-| **A** | 硬件 UUID 隔离 | 拦截 `ioreg`，每个配置返回独立 UUID |
+| **A** | 硬件 UUID 隔离 | macOS: 拦截 `ioreg` / Linux: 拦截 `machine-id` |
+| **A** | hostname / MAC 隔离 | 拦截 `hostname` 和 `ifconfig` 命令 |
 | **A** | stable_id / userID 隔离 | 切换配置时自动写入独立标识 |
 | **A** | 时区 / 语言伪装 | 根据代理出口地区自动匹配 |
 | **A** | 遥测关闭 | 置空 `CLAUDE_CODE_ENABLE_TELEMETRY` |
-| **B** | 进程级代理 | 直接注入 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` |
+| **B** | 进程级代理 | 支持 HTTP/HTTPS/SOCKS5 代理 |
 | **B** | 免本地服务端 | 无需 Clash / Shadowrocket / TUN，CLI 直连 |
 | **B** | 静态住宅 IP 支持 | 配置固定代理 → 固定出口 IP |
 | **B** | 启动前连通检测 | 代理不可达时拒绝启动，真实 IP 零泄漏 |
@@ -70,8 +71,11 @@ source ~/.zshrc
 ### 使用
 
 ```bash
-# 添加一个配置（自动检测代理出口的时区和语言）
+# 添加配置（HTTP 代理）
 cac add us1 1.2.3.4:1080:username:password
+
+# 添加配置（SOCKS5 代理）
+cac add us2 "socks5://username:password@1.2.3.4:1080"
 
 # 切换配置（同时刷新所有隐私参数）
 cac us1
@@ -89,7 +93,8 @@ claude
 
 | 命令 | 说明 |
 |:---|:---|
-| `cac add <名字> <host:port:u:p>` | 添加新配置 |
+| `cac add <名字> <host:port:u:p>` | 添加配置（HTTP 代理） |
+| `cac add <名字> "socks5://u:p@host:port"` | 添加配置（SOCKS5 代理） |
 | `cac <名字>` | 切换配置，刷新所有隐私参数 |
 | `cac ls` | 列出所有配置 |
 | `cac check` | 检查代理连通性和当前隐私参数 |
@@ -103,12 +108,12 @@ claude
                 ┌─────────────────────────┐
   claude ──────►│ 注入代理环境变量         │──── 直连远端代理 ────► Anthropic API
                 │ 注入伪装设备标识         │     (静态住宅 IP)
-                │ PATH 前置 ioreg shim    │
+                │ PATH 前置 shim 命令     │
                 │ 启动前检测代理连通性      │
                 └─────────────────────────┘
-                    ↑ 无本地服务端
-                    ↑ 无流量中转
-                    ↑ 无 TUN / 系统代理
+                    ↑ macOS: ioreg/hostname/ifconfig shim
+                    ↑ Linux: cat/hostname/ifconfig shim
+                    ↑ 无本地服务端，无流量中转
 ```
 
 ### 文件结构
@@ -116,14 +121,21 @@ claude
 ```
 ~/.cac/
 ├── bin/claude          # wrapper（拦截所有 claude 调用）
-├── shim-bin/ioreg      # ioreg shim，返回配置独立的硬件 UUID
+├── shim-bin/
+│   ├── ioreg           # macOS: 返回伪造的硬件 UUID
+│   ├── cat             # Linux: 拦截 /etc/machine-id
+│   ├── hostname        # 返回伪造的 hostname
+│   └── ifconfig        # 替换输出中的 MAC 地址
 ├── real_claude         # 真实 claude 二进制路径
 ├── current             # 当前激活的配置名
 ├── stopped             # 存在则临时停用
 └── envs/
     └── <name>/
-        ├── proxy       # http://user:pass@host:port
+        ├── proxy       # http://... 或 socks5://...
         ├── uuid        # 独立硬件 UUID
+        ├── machine_id  # 独立 machine-id (Linux)
+        ├── hostname    # 独立 hostname
+        ├── mac_address # 独立 MAC 地址
         ├── stable_id   # 独立 stable_id
         ├── user_id     # 独立 userID
         ├── tz          # 时区（如 America/New_York）
@@ -161,11 +173,12 @@ Claude Code reads and reports device identifiers at runtime (hardware UUID, inst
 
 | | Feature | Description |
 |:---|:---|:---|
-| **A** | Hardware UUID isolation | Intercepts `ioreg`, returns profile-specific UUID |
+| **A** | Hardware UUID isolation | macOS: intercepts `ioreg` / Linux: intercepts `machine-id` |
+| **A** | hostname / MAC isolation | Intercepts `hostname` and `ifconfig` commands |
 | **A** | stable_id / userID isolation | Writes independent identifiers on profile switch |
 | **A** | Timezone / locale spoofing | Auto-detected from proxy exit region |
 | **A** | Telemetry disabled | Clears `CLAUDE_CODE_ENABLE_TELEMETRY` |
-| **B** | Process-level proxy | Injects `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` directly |
+| **B** | Process-level proxy | Supports HTTP/HTTPS/SOCKS5 proxies |
 | **B** | No local server needed | No Clash / Shadowrocket / TUN — direct CLI connection |
 | **B** | Static residential IP support | Fixed proxy config = fixed egress IP |
 | **B** | Pre-launch connectivity check | Blocks startup if proxy unreachable — zero real IP leakage |
@@ -199,8 +212,11 @@ source ~/.zshrc
 ### Usage
 
 ```bash
-# Add a profile (auto-detects timezone and locale from proxy exit)
+# Add profile (HTTP proxy)
 cac add us1 1.2.3.4:1080:username:password
+
+# Add profile (SOCKS5 proxy)
+cac add us2 "socks5://username:password@1.2.3.4:1080"
 
 # Switch profile (refreshes all privacy parameters)
 cac us1
@@ -218,7 +234,8 @@ On first use, run `/login` inside Claude Code to authenticate.
 
 | Command | Description |
 |:---|:---|
-| `cac add <name> <host:port:u:p>` | Add a new profile |
+| `cac add <name> <host:port:u:p>` | Add profile (HTTP proxy) |
+| `cac add <name> "socks5://u:p@host:port"` | Add profile (SOCKS5 proxy) |
 | `cac <name>` | Switch profile, refresh all privacy parameters |
 | `cac ls` | List all profiles |
 | `cac check` | Check proxy connectivity and current privacy parameters |
@@ -232,12 +249,12 @@ On first use, run `/login` inside Claude Code to authenticate.
                 ┌─────────────────────────┐
   claude ──────►│ Inject proxy env vars    │──── Direct to remote ────► Anthropic API
                 │ Inject spoofed identity  │     (static residential)
-                │ Prepend ioreg shim       │
+                │ Prepend shim commands    │
                 │ Pre-flight proxy check   │
                 └─────────────────────────┘
-                    ↑ No local server
-                    ↑ No traffic relay
-                    ↑ No TUN / system proxy
+                    ↑ macOS: ioreg/hostname/ifconfig shim
+                    ↑ Linux: cat/hostname/ifconfig shim
+                    ↑ No local server, no traffic relay
 ```
 
 ### File Structure
@@ -245,14 +262,21 @@ On first use, run `/login` inside Claude Code to authenticate.
 ```
 ~/.cac/
 ├── bin/claude          # wrapper (intercepts all claude invocations)
-├── shim-bin/ioreg      # ioreg shim, returns profile-specific hardware UUID
+├── shim-bin/
+│   ├── ioreg           # macOS: returns spoofed hardware UUID
+│   ├── cat             # Linux: intercepts /etc/machine-id
+│   ├── hostname        # returns spoofed hostname
+│   └── ifconfig        # replaces MAC address in output
 ├── real_claude         # path to the real claude binary
 ├── current             # currently active profile name
 ├── stopped             # if present, protection is temporarily disabled
 └── envs/
     └── <name>/
-        ├── proxy       # http://user:pass@host:port
+        ├── proxy       # http://... or socks5://...
         ├── uuid        # independent hardware UUID
+        ├── machine_id  # independent machine-id (Linux)
+        ├── hostname    # independent hostname
+        ├── mac_address # independent MAC address
         ├── stable_id   # independent stable_id
         ├── user_id     # independent userID
         ├── tz          # timezone (e.g. America/New_York)
