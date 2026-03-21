@@ -31,6 +31,17 @@ cmd_setup() {
     echo "  ✓ wrapper → $CAC_DIR/bin/claude"
     echo "  ✓ hostname shim → $CAC_DIR/shim-bin/hostname"
     echo "  ✓ ifconfig shim → $CAC_DIR/shim-bin/ifconfig"
+
+    # DNS guard (NS 层级遥测拦截 + DoH)
+    _write_dns_guard_js
+    _write_blocked_hosts
+    echo "  ✓ DNS guard → $CAC_DIR/cac-dns-guard.js"
+    echo "  ✓ blocked hosts → $CAC_DIR/blocked_hosts"
+
+    # mTLS CA 证书
+    _generate_ca_cert
+    echo "  ✓ mTLS CA → $CAC_DIR/ca/ca_cert.pem"
+
     echo
     echo "── 下一步 ──────────────────────────────────────────────"
     echo "1. 将以下两行加到 ~/.zshrc 最前面："

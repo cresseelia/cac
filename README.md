@@ -36,13 +36,17 @@ Claude Code 在运行过程中会读取并上报设备标识符（硬件 UUID、
 | **A** | hostname / MAC 隔离 | 拦截 `hostname` 和 `ifconfig` 命令 |
 | **A** | stable_id / userID 隔离 | 切换配置时自动写入独立标识 |
 | **A** | 时区 / 语言伪装 | 根据代理出口地区自动匹配 |
-| **A** | 遥测关闭 | 置空 `CLAUDE_CODE_ENABLE_TELEMETRY` |
+| **A** | NS 层级遥测拦截 | DNS guard 拦截 `statsig.anthropic.com` 等遥测域名 |
+| **A** | 12 层环境变量保护 | 全面禁用遥测、错误上报、非必要流量 |
+| **A** | fetch 遥测拦截 | 替换原生 fetch，防止绕过 DNS 拦截 |
+| **A** | mTLS 客户端证书 | 自签 CA + 每环境独立客户端证书 |
 | **B** | 进程级代理 | 支持 HTTP/HTTPS/SOCKS5 代理 |
 | **B** | 免本地服务端 | 无需 Clash / Shadowrocket / TUN，CLI 直连 |
 | **B** | 静态住宅 IP 支持 | 配置固定代理 → 固定出口 IP |
 | **B** | 启动前连通检测 | 代理不可达时拒绝启动，真实 IP 零泄漏 |
+| **B** | 本地代理冲突检测 | `cac check` 自动检测 Clash/TUN 冲突 |
 
-所有 `claude` 调用（含 Agent 子进程）均通过 wrapper 拦截。
+所有 `claude` 调用（含 Agent 子进程）均通过 wrapper 拦截。零入侵 Claude Code 源代码。
 
 ### 安装
 
@@ -52,8 +56,6 @@ Claude Code 在运行过程中会读取并上报设备标识符（硬件 UUID、
 curl -fsSL https://raw.githubusercontent.com/nmhjklnm/cac/master/install.sh | bash
 ```
 
-安装脚本会自动完成：将 `cac` 放入 `~/bin`、在 `~/.zshrc` 中添加 PATH、生成 wrapper 和 ioreg shim。
-
 **手动安装：**
 
 ```bash
@@ -62,28 +64,22 @@ cd cac
 bash install.sh
 ```
 
-安装完成后重开终端，或执行：
-
-```bash
-source ~/.zshrc
-```
+安装完成后重开终端，或执行 `source ~/.zshrc`。
 
 ### 使用
 
 ```bash
-# 添加配置（HTTP 代理）
+# 添加配置
 cac add us1 1.2.3.4:1080:username:password
-
-# 添加配置（SOCKS5 代理）
 cac add us2 "socks5://username:password@1.2.3.4:1080"
 
-# 切换配置（同时刷新所有隐私参数）
+# 切换配置
 cac us1
 
-# 检查当前状态
+# 检查状态（含代理冲突检测）
 cac check
 
-# 启动 Claude Code（走 wrapper）
+# 启动 Claude Code
 claude
 ```
 
@@ -93,62 +89,55 @@ claude
 
 | 命令 | 说明 |
 |:---|:---|
-| `cac add <名字> <host:port:u:p>` | 添加配置（HTTP 代理） |
-| `cac add <名字> "socks5://u:p@host:port"` | 添加配置（SOCKS5 代理） |
+| `cac add <名字> <host:port:u:p>` | 添加配置 |
 | `cac <名字>` | 切换配置，刷新所有隐私参数 |
 | `cac ls` | 列出所有配置 |
-| `cac check` | 检查代理连通性和当前隐私参数 |
+| `cac check` | 检查代理 + 安全防护 + 冲突检测 |
 | `cac stop` | 临时停用保护 |
 | `cac -c` | 恢复保护 |
 
 ### 工作原理
 
 ```
-                cac wrapper (进程级)
-                ┌─────────────────────────┐
-  claude ──────►│ 注入代理环境变量         │──── 直连远端代理 ────► Anthropic API
-                │ 注入伪装设备标识         │     (静态住宅 IP)
-                │ PATH 前置 shim 命令     │
-                │ 启动前检测代理连通性      │
-                └─────────────────────────┘
+                cac wrapper (进程级，零入侵源代码)
+                ┌──────────────────────────────────────┐
+  claude ──────►│ 12 层环境变量遥测保护                  │──── 直连远端代理 ────► Anthropic API
+                │ NODE_OPTIONS --require DNS guard     │     (静态住宅 IP)
+                │ PATH 前置 shim（设备指纹隔离）         │
+                │ mTLS 客户端证书注入                    │
+                │ 启动前代理连通性检测                    │
+                └──────────────────────────────────────┘
+                    ↑ dns.lookup / net.connect / fetch 遥测拦截
                     ↑ macOS: ioreg/hostname/ifconfig shim
                     ↑ Linux: cat/hostname/ifconfig shim
-                    ↑ 无本地服务端，无流量中转
 ```
 
 ### 文件结构
 
 ```
 ~/.cac/
-├── bin/claude          # wrapper（拦截所有 claude 调用）
-├── shim-bin/
-│   ├── ioreg           # macOS: 返回伪造的硬件 UUID
-│   ├── cat             # Linux: 拦截 /etc/machine-id
-│   ├── hostname        # 返回伪造的 hostname
-│   └── ifconfig        # 替换输出中的 MAC 地址
-├── real_claude         # 真实 claude 二进制路径
-├── current             # 当前激活的配置名
-├── stopped             # 存在则临时停用
-└── envs/
-    └── <name>/
-        ├── proxy       # http://... 或 socks5://...
-        ├── uuid        # 独立硬件 UUID
-        ├── machine_id  # 独立 machine-id (Linux)
-        ├── hostname    # 独立 hostname
-        ├── mac_address # 独立 MAC 地址
-        ├── stable_id   # 独立 stable_id
-        ├── user_id     # 独立 userID
-        ├── tz          # 时区（如 America/New_York）
-        └── lang        # 语言（如 en_US.UTF-8）
+├── bin/claude            # wrapper（拦截所有 claude 调用）
+├── shim-bin/             # ioreg / hostname / ifconfig / cat shim
+├── cac-dns-guard.js      # NS 层级 DNS 拦截 + mTLS 注入 + fetch 补丁
+├── blocked_hosts         # HOSTALIASES 遥测域名拦截（备用层）
+├── ca/                   # mTLS 自签 CA 证书
+├── real_claude           # 真实 claude 二进制路径
+├── current               # 当前激活的配置名
+└── envs/<name>/
+    ├── proxy             # 代理地址
+    ├── uuid / stable_id / user_id  # 独立身份标识
+    ├── machine_id / hostname / mac_address  # 独立设备指纹
+    ├── client_cert.pem / client_key.pem     # mTLS 客户端证书
+    └── tz / lang         # 时区 / 语言
 ```
 
 ### 注意事项
 
 > **本地代理工具共存**
-> 若同时使用 Clash / Shadowrocket 等 TUN 模式，需为代理服务器 IP 添加 DIRECT 规则，避免流量被二次拦截。
+> 若同时使用 Clash / Shadowrocket 等 TUN 模式，需为代理服务器 IP 添加 DIRECT 规则。`cac check` 会自动检测冲突并给出修复建议。
 
 > **第三方 API 配置**
-> wrapper 启动时自动清除 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`，确保使用官方登录端点。
+> wrapper 启动时自动清除 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`。
 
 > **IPv6**
 > 建议在系统层关闭 IPv6，防止真实出口 IPv6 地址被暴露。
@@ -163,11 +152,11 @@ claude
 
 ### Why cac
 
-Claude Code reads and reports device identifiers at runtime (hardware UUID, installation ID, network egress IP, etc.). cac intercepts all `claude` invocations via a wrapper, solving two problems at the process level:
+Claude Code reads and reports device identifiers at runtime (hardware UUID, installation ID, network egress IP, etc.). cac intercepts all `claude` invocations via a wrapper, solving two problems at the process level — without modifying any Claude Code source code:
 
 **A. Privacy Cloak** — Each profile presents an independent device identity, fully isolating your real device fingerprint.
 
-**B. CLI Proxy** — Process-level proxy injection; `claude` traffic connects directly to the remote proxy server. No Clash / Shadowrocket or any local proxy tools needed. No relay, no local server. Pair with a static residential IP for a fixed, clean egress identity.
+**B. CLI Proxy** — Process-level proxy injection; `claude` traffic connects directly to the remote proxy server. No Clash / Shadowrocket or any local proxy tools needed.
 
 ### Features
 
@@ -177,13 +166,17 @@ Claude Code reads and reports device identifiers at runtime (hardware UUID, inst
 | **A** | hostname / MAC isolation | Intercepts `hostname` and `ifconfig` commands |
 | **A** | stable_id / userID isolation | Writes independent identifiers on profile switch |
 | **A** | Timezone / locale spoofing | Auto-detected from proxy exit region |
-| **A** | Telemetry disabled | Clears `CLAUDE_CODE_ENABLE_TELEMETRY` |
+| **A** | NS-level telemetry blocking | DNS guard blocks `statsig.anthropic.com` and other telemetry domains |
+| **A** | 12-layer env var protection | Disables telemetry, error reporting, non-essential traffic |
+| **A** | fetch telemetry interception | Replaces native fetch to prevent DNS interception bypass |
+| **A** | mTLS client certificates | Self-signed CA + per-profile client certificates |
 | **B** | Process-level proxy | Supports HTTP/HTTPS/SOCKS5 proxies |
 | **B** | No local server needed | No Clash / Shadowrocket / TUN — direct CLI connection |
 | **B** | Static residential IP support | Fixed proxy config = fixed egress IP |
 | **B** | Pre-launch connectivity check | Blocks startup if proxy unreachable — zero real IP leakage |
+| **B** | Local proxy conflict detection | `cac check` detects Clash/TUN conflicts automatically |
 
-All `claude` invocations (including Agent subprocesses) are intercepted by the wrapper.
+All `claude` invocations (including Agent subprocesses) are intercepted. Zero invasion of Claude Code source code.
 
 ### Installation
 
@@ -193,8 +186,6 @@ All `claude` invocations (including Agent subprocesses) are intercepted by the w
 curl -fsSL https://raw.githubusercontent.com/nmhjklnm/cac/master/install.sh | bash
 ```
 
-The install script automatically: places `cac` in `~/bin`, adds PATH to `~/.zshrc`, and generates the wrapper and ioreg shim.
-
 **Manual install:**
 
 ```bash
@@ -203,28 +194,14 @@ cd cac
 bash install.sh
 ```
 
-After installation, restart your terminal or run:
-
-```bash
-source ~/.zshrc
-```
+After installation, restart your terminal or run `source ~/.zshrc`.
 
 ### Usage
 
 ```bash
-# Add profile (HTTP proxy)
 cac add us1 1.2.3.4:1080:username:password
-
-# Add profile (SOCKS5 proxy)
-cac add us2 "socks5://username:password@1.2.3.4:1080"
-
-# Switch profile (refreshes all privacy parameters)
 cac us1
-
-# Check current status
-cac check
-
-# Launch Claude Code (through wrapper)
+cac check    # includes proxy conflict detection
 claude
 ```
 
@@ -234,62 +211,36 @@ On first use, run `/login` inside Claude Code to authenticate.
 
 | Command | Description |
 |:---|:---|
-| `cac add <name> <host:port:u:p>` | Add profile (HTTP proxy) |
-| `cac add <name> "socks5://u:p@host:port"` | Add profile (SOCKS5 proxy) |
+| `cac add <name> <host:port:u:p>` | Add profile |
 | `cac <name>` | Switch profile, refresh all privacy parameters |
 | `cac ls` | List all profiles |
-| `cac check` | Check proxy connectivity and current privacy parameters |
+| `cac check` | Check proxy + security + conflict detection |
 | `cac stop` | Temporarily disable protection |
 | `cac -c` | Re-enable protection |
 
 ### How It Works
 
 ```
-                cac wrapper (process-level)
-                ┌─────────────────────────┐
-  claude ──────►│ Inject proxy env vars    │──── Direct to remote ────► Anthropic API
-                │ Inject spoofed identity  │     (static residential)
-                │ Prepend shim commands    │
-                │ Pre-flight proxy check   │
-                └─────────────────────────┘
+                cac wrapper (process-level, zero source invasion)
+                ┌──────────────────────────────────────┐
+  claude ──────►│ 12-layer env var telemetry protection │──── Direct to remote ────► Anthropic API
+                │ NODE_OPTIONS --require DNS guard      │     (static residential)
+                │ PATH-prepended shims (fingerprint)    │
+                │ mTLS client cert injection            │
+                │ Pre-flight proxy check                │
+                └──────────────────────────────────────┘
+                    ↑ dns.lookup / net.connect / fetch telemetry interception
                     ↑ macOS: ioreg/hostname/ifconfig shim
                     ↑ Linux: cat/hostname/ifconfig shim
-                    ↑ No local server, no traffic relay
-```
-
-### File Structure
-
-```
-~/.cac/
-├── bin/claude          # wrapper (intercepts all claude invocations)
-├── shim-bin/
-│   ├── ioreg           # macOS: returns spoofed hardware UUID
-│   ├── cat             # Linux: intercepts /etc/machine-id
-│   ├── hostname        # returns spoofed hostname
-│   └── ifconfig        # replaces MAC address in output
-├── real_claude         # path to the real claude binary
-├── current             # currently active profile name
-├── stopped             # if present, protection is temporarily disabled
-└── envs/
-    └── <name>/
-        ├── proxy       # http://... or socks5://...
-        ├── uuid        # independent hardware UUID
-        ├── machine_id  # independent machine-id (Linux)
-        ├── hostname    # independent hostname
-        ├── mac_address # independent MAC address
-        ├── stable_id   # independent stable_id
-        ├── user_id     # independent userID
-        ├── tz          # timezone (e.g. America/New_York)
-        └── lang        # locale (e.g. en_US.UTF-8)
 ```
 
 ### Notes
 
 > **Coexisting with local proxy tools**
-> If you also use Clash / Shadowrocket in TUN mode, add a DIRECT rule for the proxy server IP to prevent traffic from being double-intercepted.
+> If you also use Clash / Shadowrocket in TUN mode, add a DIRECT rule for the proxy server IP. `cac check` will detect conflicts and provide fix suggestions.
 
 > **Third-party API configuration**
-> The wrapper automatically clears `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` on startup to ensure the official login endpoint is used.
+> The wrapper automatically clears `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` on startup.
 
 > **IPv6**
 > It is recommended to disable IPv6 at the system level to prevent your real IPv6 egress address from being exposed.

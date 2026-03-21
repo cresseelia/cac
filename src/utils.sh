@@ -26,7 +26,7 @@ _new_sid()     { uuidgen | tr '[:upper:]' '[:lower:]'; }
 _new_user_id() { python3 -c "import os; print(os.urandom(32).hex())"; }
 _new_machine_id() { uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]'; }
 _new_hostname() { echo "host-$(uuidgen | cut -d- -f1 | tr '[:upper:]' '[:lower:]')"; }
-_new_mac() { printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)); }
+_new_mac() { od -An -tx1 -N5 /dev/urandom | awk '{printf "02:%s:%s:%s:%s:%s",$1,$2,$3,$4,$5}'; }
 
 # host:port:user:pass → http://user:pass@host:port
 # 或直接传入完整 URL（http://、https://、socks5://）
@@ -95,12 +95,14 @@ _update_claude_json_user_id() {
     local user_id="$1"
     local claude_json="$HOME/.claude.json"
     [[ -f "$claude_json" ]] || return 0
-    python3 -c "
+    python3 - "$claude_json" "$user_id" << 'PYEOF'
 import json, sys
-with open('$claude_json') as f:
+fpath, uid = sys.argv[1], sys.argv[2]
+with open(fpath) as f:
     d = json.load(f)
-d['userID'] = '$user_id'
-with open('$claude_json', 'w') as f:
+d['userID'] = uid
+with open(fpath, 'w') as f:
     json.dump(d, f, indent=2, ensure_ascii=False)
-" && return 0 || echo "警告：更新 ~/.claude.json userID 失败" >&2
+PYEOF
+    [[ $? -eq 0 ]] || echo "警告：更新 ~/.claude.json userID 失败" >&2
 }

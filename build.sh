@@ -9,6 +9,8 @@ OUT="$PROJ_DIR/cac"
 # 拼接顺序
 SOURCES=(
     utils.sh
+    dns_block.sh
+    mtls.sh
     templates.sh
     cmd_setup.sh
     cmd_env.sh
@@ -33,9 +35,9 @@ SOURCES=(
         if [[ ! -f "$src" ]]; then
             echo "错误：找不到 $src" >&2; exit 1
         fi
-        # 跳过 shebang 行（以 # 开头的注释第一行保留用于标识）
+        # 仅跳过源文件自身首行 shebang（保留 heredoc 内的 shebang）
         echo "# ━━━ $file ━━━"
-        grep -v '^#!/' "$src"
+        awk 'NR==1 && /^#!\// {next} {print}' "$src"
         echo
     done
 } > "$OUT"

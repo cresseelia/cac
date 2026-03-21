@@ -65,10 +65,19 @@ cmd_add() {
     echo "$tz"               > "$env_dir/tz"
     echo "$lang"             > "$env_dir/lang"
 
+    # 生成 mTLS 客户端证书
+    printf "  生成 mTLS 证书 ... "
+    if _generate_client_cert "$name"; then
+        echo "$(_green "✓")"
+    else
+        echo "$(_yellow "⚠ 跳过")"
+    fi
+
     echo
     echo "$(_green "✓") 环境 '$(_bold "$name")' 已创建"
     echo "  UUID     ：$(cat "$env_dir/uuid")"
     echo "  stable_id：$(cat "$env_dir/stable_id")"
+    echo "  mTLS     ：$([ -f "$env_dir/client_cert.pem" ] && echo "已配置" || echo "未配置")"
     echo "  TZ       ：$tz"
     echo "  LANG     ：$lang"
     echo

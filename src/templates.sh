@@ -44,16 +44,56 @@ if [[ -f "$_env_dir/stable_id" ]]; then
     done
 fi
 
-# 注入环境变量
+# 注入环境变量 —— 代理
 export HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" ALL_PROXY="$PROXY"
 export NO_PROXY="localhost,127.0.0.1"
 export PATH="$CAC_DIR/shim-bin:$PATH"
-# OTel 遥测默认 off，显式置空防止外层误开
+
+# ── 多层环境变量遥测保护 ──
+# Layer 1: Claude Code 原生开关
 export CLAUDE_CODE_ENABLE_TELEMETRY=
+# Layer 2: 通用遥测标准 (https://consoledonottrack.com)
+export DO_NOT_TRACK=1
+# Layer 3: OpenTelemetry SDK 全面禁用
+export OTEL_SDK_DISABLED=true
+export OTEL_TRACES_EXPORTER=none
+export OTEL_METRICS_EXPORTER=none
+export OTEL_LOGS_EXPORTER=none
+# Layer 4: Sentry DSN 置空，阻止错误上报
+export SENTRY_DSN=
+# Layer 5: Claude Code 特有开关
+export DISABLE_ERROR_REPORTING=1
+export DISABLE_BUG_COMMAND=1
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+# Layer 6: 其他已知遥测标志
+export TELEMETRY_DISABLED=1
+export DISABLE_TELEMETRY=1
+
 # 清除第三方 API 配置，强制走 OAuth 官方端点
 unset ANTHROPIC_BASE_URL
 unset ANTHROPIC_AUTH_TOKEN
 unset ANTHROPIC_API_KEY
+
+# ── NS 层级 DNS 拦截 ──
+if [[ -f "$CAC_DIR/cac-dns-guard.js" ]]; then
+    case "${NODE_OPTIONS:-}" in
+        *cac-dns-guard.js*) ;; # 已注入，跳过
+        *) export NODE_OPTIONS="${NODE_OPTIONS:-} --require $CAC_DIR/cac-dns-guard.js" ;;
+    esac
+fi
+# 备用层：HOSTALIASES（gethostbyname 级别）
+[[ -f "$CAC_DIR/blocked_hosts" ]] && export HOSTALIASES="$CAC_DIR/blocked_hosts"
+
+# ── mTLS 客户端证书 ──
+if [[ -f "$_env_dir/client_cert.pem" ]] && [[ -f "$_env_dir/client_key.pem" ]]; then
+    export CAC_MTLS_CERT="$_env_dir/client_cert.pem"
+    export CAC_MTLS_KEY="$_env_dir/client_key.pem"
+    [[ -f "$CAC_DIR/ca/ca_cert.pem" ]] && {
+        export CAC_MTLS_CA="$CAC_DIR/ca/ca_cert.pem"
+        export NODE_EXTRA_CA_CERTS="$CAC_DIR/ca/ca_cert.pem"
+    }
+    export CAC_PROXY_HOST="$_hp"
+fi
 
 [[ -f "$_env_dir/tz" ]]   && export TZ=$(tr -d '[:space:]' < "$_env_dir/tz")
 [[ -f "$_env_dir/lang" ]] && export LANG=$(tr -d '[:space:]' < "$_env_dir/lang")
@@ -111,17 +151,18 @@ _write_machine_id_shim() {
 #!/usr/bin/env bash
 CAC_DIR="$HOME/.cac"
 
+# 先获取真实 cat 路径（避免递归调用自身）
+_real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v cat 2>/dev/null || true)
+
 # 拦截 /etc/machine-id 和 /var/lib/dbus/machine-id
 if [[ "$1" == "/etc/machine-id" ]] || [[ "$1" == "/var/lib/dbus/machine-id" ]]; then
     _mid_file="$CAC_DIR/envs/$(tr -d '[:space:]' < "$CAC_DIR/current" 2>/dev/null)/machine_id"
-    if [[ -f "$_mid_file" ]]; then
-        cat "$_mid_file"
-        exit 0
+    if [[ -f "$_mid_file" ]] && [[ -n "$_real" ]]; then
+        exec "$_real" "$_mid_file"
     fi
 fi
 
 # 非目标调用：透传真实 cat
-_real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v cat 2>/dev/null || true)
 [[ -n "$_real" ]] && exec "$_real" "$@"
 exit 1
 CAT_EOF
