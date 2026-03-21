@@ -15,12 +15,6 @@ _detect_os() {
     esac
 }
 
-_get_real_cmd() {
-    local cmd="$1"
-    PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') \
-        command -v "$cmd" 2>/dev/null || true
-}
-
 _new_uuid()    { uuidgen | tr '[:lower:]' '[:upper:]'; }
 _new_sid()     { uuidgen | tr '[:upper:]' '[:lower:]'; }
 _new_user_id() { python3 -c "import os; print(os.urandom(32).hex())"; }

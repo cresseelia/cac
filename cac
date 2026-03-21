@@ -24,12 +24,6 @@ _detect_os() {
     esac
 }
 
-_get_real_cmd() {
-    local cmd="$1"
-    PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') \
-        command -v "$cmd" 2>/dev/null || true
-}
-
 _new_uuid()    { uuidgen | tr '[:lower:]' '[:upper:]'; }
 _new_sid()     { uuidgen | tr '[:upper:]' '[:lower:]'; }
 _new_user_id() { python3 -c "import os; print(os.urandom(32).hex())"; }
@@ -559,10 +553,10 @@ _env_dir="$ENVS_DIR/$_name"
 
 PROXY=$(tr -d '[:space:]' < "$_env_dir/proxy")
 
-# pre-flight：代理连通性
-_hp=$(echo "$PROXY" | sed 's|.*@||' | sed 's|.*://||')
-_host=$(echo "$_hp" | cut -d: -f1)
-_port=$(echo "$_hp" | cut -d: -f2)
+# pre-flight：代理连通性（纯 bash，无 fork）
+_hp="${PROXY##*@}"; _hp="${_hp##*://}"
+_host="${_hp%%:*}"
+_port="${_hp##*:}"
 if ! (echo >/dev/tcp/"$_host"/"$_port") 2>/dev/null; then
     echo "[cac] 错误：[$_name] 代理 $_hp 不通，拒绝启动。" >&2
     echo "[cac] 提示：运行 'cac check' 排查，或 'cacstop' 临时停用" >&2
@@ -729,16 +723,14 @@ _write_ifconfig_shim() {
 #!/usr/bin/env bash
 CAC_DIR="$HOME/.cac"
 
-# 读取伪造的 MAC 地址
+_real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v ifconfig 2>/dev/null || true)
+
 _mac_file="$CAC_DIR/envs/$(tr -d '[:space:]' < "$CAC_DIR/current" 2>/dev/null)/mac_address"
-if [[ -f "$_mac_file" ]]; then
-    FAKE_MAC=$(cat "$_mac_file")
-    _real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v ifconfig 2>/dev/null || true)
-    [[ -n "$_real" ]] && "$_real" "$@" | sed "s/ether [0-9a-f:]\{17\}/ether $FAKE_MAC/g" && exit 0
+if [[ -f "$_mac_file" ]] && [[ -n "$_real" ]]; then
+    FAKE_MAC=$(tr -d '[:space:]' < "$_mac_file")
+    "$_real" "$@" | sed "s/ether [0-9a-f:]\{17\}/ether $FAKE_MAC/g" && exit 0
 fi
 
-# 透传真实 ifconfig
-_real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v ifconfig 2>/dev/null || true)
 [[ -n "$_real" ]] && exec "$_real" "$@"
 exit 1
 IFCONFIG_EOF
@@ -944,10 +936,9 @@ cmd_ls() {
 
 # 检测本地代理软件冲突（Clash / Surge / Shadowrocket 等）
 _check_proxy_conflict() {
-    local proxy="$1"
-    local proxy_hp
-    proxy_hp=$(_proxy_host_port "$proxy")
-    local proxy_host; proxy_host=$(echo "$proxy_hp" | cut -d: -f1)
+    local proxy="$1" proxy_ip="$2"
+    local proxy_hp; proxy_hp=$(_proxy_host_port "$proxy")
+    local proxy_host="${proxy_hp%%:*}"
 
     local os; os=$(_detect_os)
     local conflicts=()
@@ -962,9 +953,8 @@ _check_proxy_conflict() {
     fi
 
     if [[ -n "$running" ]]; then
-        # 提取进程名（去重）
         local proc_names
-        proc_names=$(echo "$running" | awk '{for(i=1;i<=NF;i++) if(tolower($i)~/clash|mihomo|sing-box|surge|shadowrocket|v2ray|xray|hysteria|tuic|nekoray/) print $i}' | sort -u | head -3)
+        proc_names=$(echo "$running" | grep -ioE "$tun_procs" | sort -u | head -3)
         if [[ -n "$proc_names" ]]; then
             conflicts+=("检测到本地代理进程: $(echo "$proc_names" | tr '\n' ' ')")
         fi
@@ -972,11 +962,8 @@ _check_proxy_conflict() {
 
     # ── 2. 检测 TUN 网卡（utun / tun）──
     if [[ "$os" == "macos" ]]; then
-        local tun_ifaces
-        tun_ifaces=$(ifconfig 2>/dev/null | grep -oE '^utun[0-9]+' | head -5 || true)
-        # macOS 系统自带 utun0/utun1，Clash TUN 通常是 utun3+
         local tun_count
-        tun_count=$(echo "$tun_ifaces" | grep -c 'utun' 2>/dev/null || echo 0)
+        tun_count=$(ifconfig 2>/dev/null | grep -cE '^utun[0-9]+' || echo 0)
         if [[ "$tun_count" -gt 3 ]]; then
             conflicts+=("检测到多个 TUN 网卡 (${tun_count} 个)，可能有代理软件启用了 TUN 模式")
         fi
@@ -993,25 +980,18 @@ _check_proxy_conflict() {
         if [[ -n "$net_service" ]]; then
             local sys_http_proxy
             sys_http_proxy=$(networksetup -getwebproxy "$net_service" 2>/dev/null || true)
-            local sys_enabled
-            sys_enabled=$(echo "$sys_http_proxy" | grep -i "Enabled: Yes" || true)
-            if [[ -n "$sys_enabled" ]]; then
+            if echo "$sys_http_proxy" | grep -qi "Enabled: Yes"; then
                 local sys_host sys_port
                 sys_host=$(echo "$sys_http_proxy" | awk '/^Server:/{print $2}')
                 sys_port=$(echo "$sys_http_proxy" | awk '/^Port:/{print $2}')
-                if [[ -n "$sys_host" ]]; then
-                    conflicts+=("系统 HTTP 代理已开启: ${sys_host}:${sys_port}")
-                fi
+                [[ -n "$sys_host" ]] && conflicts+=("系统 HTTP 代理已开启: ${sys_host}:${sys_port}")
             fi
         fi
     fi
 
-    # ── 4. 检测代理流量是否被二次转发 ──
-    # 直连获取本机出口 IP，再通过代理获取出口 IP
-    # 如果代理出口 IP == 直连出口 IP，说明代理流量被本地代理软件拦截了
-    local direct_ip proxy_ip
+    # ── 4. 检测代理流量是否被二次转发（复用已获取的 proxy_ip）──
+    local direct_ip
     direct_ip=$(curl -s --noproxy '*' --connect-timeout 5 https://api.ipify.org 2>/dev/null || true)
-    proxy_ip=$(curl -s --proxy "$proxy" --connect-timeout 8 https://api.ipify.org 2>/dev/null || true)
     if [[ -n "$direct_ip" ]] && [[ -n "$proxy_ip" ]] && [[ "$direct_ip" == "$proxy_ip" ]]; then
         conflicts+=("代理出口 IP ($proxy_ip) 与直连出口 IP 相同，代理流量可能被本地软件拦截")
     fi
@@ -1072,20 +1052,20 @@ cmd_check() {
     echo "$(_green "✓")"
 
     printf "  出口 IP   ... "
-    local ip
-    ip=$(curl -s --proxy "$proxy" \
+    local proxy_ip
+    proxy_ip=$(curl -s --proxy "$proxy" \
          --connect-timeout 8 https://api.ipify.org 2>/dev/null || true)
-    if [[ -n "$ip" ]]; then
-        echo "$(_green "$ip")"
+    if [[ -n "$proxy_ip" ]]; then
+        echo "$(_green "$proxy_ip")"
     else
         echo "$(_yellow "获取失败")"
     fi
 
-    # ── 本地代理冲突检测 ──
+    # ── 本地代理冲突检测（复用已获取的 proxy_ip）──
     echo
     echo "── 冲突检测 ────────────────────────────────────────────"
     printf "  代理冲突  ... "
-    _check_proxy_conflict "$proxy"
+    _check_proxy_conflict "$proxy" "$proxy_ip"
 
     echo
     echo "── 安全防护状态 ──────────────────────────────────────"
@@ -1094,9 +1074,11 @@ cmd_check() {
     printf "  DNS 拦截  ... "
     _check_dns_block "statsig.anthropic.com"
 
-    # ── 多层环境变量保护 ──
+    # ── 多层环境变量保护（单次读取 wrapper 文件）──
     echo "  环境变量保护："
     local wrapper_file="$CAC_DIR/bin/claude"
+    local wrapper_content=""
+    [[ -f "$wrapper_file" ]] && wrapper_content=$(<"$wrapper_file")
     local env_vars=(
         "CLAUDE_CODE_ENABLE_TELEMETRY"
         "DO_NOT_TRACK"
@@ -1113,7 +1095,7 @@ cmd_check() {
     )
     for var in "${env_vars[@]}"; do
         printf "    %-32s" "$var"
-        if [[ -f "$wrapper_file" ]] && grep -q "$var" "$wrapper_file" 2>/dev/null; then
+        if [[ "$wrapper_content" == *"$var"* ]]; then
             echo "$(_green "✓ 已配置")"
         else
             echo "$(_red "✗ 未找到")"

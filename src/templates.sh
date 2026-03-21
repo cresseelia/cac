@@ -26,10 +26,10 @@ _env_dir="$ENVS_DIR/$_name"
 
 PROXY=$(tr -d '[:space:]' < "$_env_dir/proxy")
 
-# pre-flight：代理连通性
-_hp=$(echo "$PROXY" | sed 's|.*@||' | sed 's|.*://||')
-_host=$(echo "$_hp" | cut -d: -f1)
-_port=$(echo "$_hp" | cut -d: -f2)
+# pre-flight：代理连通性（纯 bash，无 fork）
+_hp="${PROXY##*@}"; _hp="${_hp##*://}"
+_host="${_hp%%:*}"
+_port="${_hp##*:}"
 if ! (echo >/dev/tcp/"$_host"/"$_port") 2>/dev/null; then
     echo "[cac] 错误：[$_name] 代理 $_hp 不通，拒绝启动。" >&2
     echo "[cac] 提示：运行 'cac check' 排查，或 'cacstop' 临时停用" >&2
@@ -196,16 +196,14 @@ _write_ifconfig_shim() {
 #!/usr/bin/env bash
 CAC_DIR="$HOME/.cac"
 
-# 读取伪造的 MAC 地址
+_real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v ifconfig 2>/dev/null || true)
+
 _mac_file="$CAC_DIR/envs/$(tr -d '[:space:]' < "$CAC_DIR/current" 2>/dev/null)/mac_address"
-if [[ -f "$_mac_file" ]]; then
-    FAKE_MAC=$(cat "$_mac_file")
-    _real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v ifconfig 2>/dev/null || true)
-    [[ -n "$_real" ]] && "$_real" "$@" | sed "s/ether [0-9a-f:]\{17\}/ether $FAKE_MAC/g" && exit 0
+if [[ -f "$_mac_file" ]] && [[ -n "$_real" ]]; then
+    FAKE_MAC=$(tr -d '[:space:]' < "$_mac_file")
+    "$_real" "$@" | sed "s/ether [0-9a-f:]\{17\}/ether $FAKE_MAC/g" && exit 0
 fi
 
-# 透传真实 ifconfig
-_real=$(PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$CAC_DIR/shim-bin" | tr '\n' ':') command -v ifconfig 2>/dev/null || true)
 [[ -n "$_real" ]] && exec "$_real" "$@"
 exit 1
 IFCONFIG_EOF
