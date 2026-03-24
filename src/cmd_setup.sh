@@ -5,8 +5,15 @@ _ensure_initialized() {
     mkdir -p "$CAC_DIR" "$ENVS_DIR" "$VERSIONS_DIR"
 
     # Always sync JS hooks + dns-guard (they update with cac versions)
+    # Resolve symlink — npm global install creates: /usr/local/bin/cac → .../node_modules/claude-cac/cac
+    local _self_path="${BASH_SOURCE[0]:-$0}"
+    if [[ -L "$_self_path" ]]; then
+        local _link; _link="$(readlink "$_self_path")"
+        [[ "$_link" != /* ]] && _link="$(dirname "$_self_path")/$_link"
+        _self_path="$_link"
+    fi
     local _self_dir
-    _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _self_dir="$(cd "$(dirname "$_self_path")" && pwd)"
     [[ -f "$_self_dir/fingerprint-hook.js" ]] && cp "$_self_dir/fingerprint-hook.js" "$CAC_DIR/fingerprint-hook.js"
     [[ -f "$_self_dir/relay.js" ]] && cp "$_self_dir/relay.js" "$CAC_DIR/relay.js"
     _write_dns_guard_js 2>/dev/null || true

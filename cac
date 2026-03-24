@@ -10,7 +10,7 @@ VERSIONS_DIR="$CAC_DIR/versions"
 # ━━━ utils.sh ━━━
 # ── utils: 颜色、读写、UUID、proxy 解析 ───────────────────────
 
-CAC_VERSION="1.1.3"
+CAC_VERSION="1.1.4"
 
 _read()   { [[ -f "$1" ]] && tr -d '[:space:]' < "$1" || echo "${2:-}"; }
 _die()    { printf '%b\n' "$(_red "error:") $*" >&2; exit 1; }
@@ -1195,8 +1195,15 @@ _ensure_initialized() {
     mkdir -p "$CAC_DIR" "$ENVS_DIR" "$VERSIONS_DIR"
 
     # Always sync JS hooks + dns-guard (they update with cac versions)
+    # Resolve symlink — npm global install creates: /usr/local/bin/cac → .../node_modules/claude-cac/cac
+    local _self_path="${BASH_SOURCE[0]:-$0}"
+    if [[ -L "$_self_path" ]]; then
+        local _link; _link="$(readlink "$_self_path")"
+        [[ "$_link" != /* ]] && _link="$(dirname "$_self_path")/$_link"
+        _self_path="$_link"
+    fi
     local _self_dir
-    _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _self_dir="$(cd "$(dirname "$_self_path")" && pwd)"
     [[ -f "$_self_dir/fingerprint-hook.js" ]] && cp "$_self_dir/fingerprint-hook.js" "$CAC_DIR/fingerprint-hook.js"
     [[ -f "$_self_dir/relay.js" ]] && cp "$_self_dir/relay.js" "$CAC_DIR/relay.js"
     _write_dns_guard_js 2>/dev/null || true
